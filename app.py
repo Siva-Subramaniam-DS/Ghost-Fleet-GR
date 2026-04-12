@@ -666,19 +666,22 @@ def filter_commands_by_permission(permission_level: str) -> dict:
             "utility": COMMAND_DATA["utility"]
         }
 
-def build_help_embed(permission_level: str, user_name: str) -> discord.Embed:
+def build_help_embed(permission_level: str, user_name: str, bot_icon_url: str = None, user_icon_url: str = None) -> discord.Embed:
     """Build a comprehensive help embed based on user's permission level"""
     try:
         # Get filtered commands for this user
         filtered_commands = filter_commands_by_permission(permission_level)
         
-        # Create main embed
+        # Create main embed using Valorant red color
         embed = discord.Embed(
             title=f"🎯 {ORGANIZATION_NAME} Tournament System",
             description=f"**Command Guide** - Showing commands available to you\n*Permission Level: {permission_level.title()}*",
-            color=discord.Color.blue(),
+            color=discord.Color(0xFF4655),
             timestamp=discord.utils.utcnow()
         )
+        
+        if bot_icon_url:
+            embed.set_thumbnail(url=bot_icon_url)
         
         # Add command categories
         for category_key, category_data in filtered_commands.items():
@@ -719,7 +722,10 @@ def build_help_embed(permission_level: str, user_name: str) -> discord.Embed:
                     inline=False
                 )
         
-        embed.set_footer(text=f"{ORGANIZATION_NAME} • Command Guide")
+        if user_icon_url:
+            embed.set_footer(text=f"{ORGANIZATION_NAME} • Command Guide • Requested by {user_name}", icon_url=user_icon_url)
+        else:
+            embed.set_footer(text=f"{ORGANIZATION_NAME} • Command Guide • Requested by {user_name}")
         return embed
         
     except Exception as e:
@@ -1937,11 +1943,14 @@ async def help_command(interaction: discord.Interaction):
         # Determine user's permission level
         permission_level = get_user_permission_level(interaction.user.roles)
         
-        # Build appropriate help embed
-        embed = build_help_embed(permission_level, interaction.user.display_name)
+        bot_icon = interaction.client.user.display_avatar.url if interaction.client.user.display_avatar else None
+        user_icon = interaction.user.display_avatar.url if interaction.user.display_avatar else None
         
-        # Send ephemeral response
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        # Build appropriate help embed
+        embed = build_help_embed(permission_level, interaction.user.display_name, bot_icon_url=bot_icon, user_icon_url=user_icon)
+        
+        # Send public response
+        await interaction.response.send_message(embed=embed, ephemeral=False)
         
     except Exception as e:
         print(f"Error in help command: {e}")
