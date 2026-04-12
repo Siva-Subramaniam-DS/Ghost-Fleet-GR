@@ -1804,7 +1804,22 @@ async def on_message(message):
             
         if command == '$close':
             try:
-                await message.channel.delete(reason=f"Ticket closed by {message.author.name}")
+                closed_category_id = CHANNEL_IDS.get("closed_tickets_category", 1492915418556268605)
+                closed_category = message.guild.get_channel(closed_category_id)
+                if closed_category:
+                    await message.channel.edit(
+                        category=closed_category,
+                        sync_permissions=True,
+                        reason=f"Ticket closed by {message.author.name}"
+                    )
+                    await message.channel.send("🔒 Ticket closed and moved to the closed category.")
+                else:
+                    await message.channel.send("❌ Closed ticket category not found.")
+                
+                try:
+                    await message.delete()
+                except discord.Forbidden:
+                    pass
             except discord.Forbidden:
                 pass
             except Exception as e:
