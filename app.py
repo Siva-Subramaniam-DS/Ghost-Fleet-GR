@@ -3680,9 +3680,9 @@ async def add_captain(interaction: discord.Interaction, round: str, captain1: di
         rules_embed.add_field(
             name="📋 Tournament Information",
             value=(
-                "• Refer to https://discord.com/channels/1038883381745827931/1175583664290144306 for match schedules and pairings.\n"
-                "• Refer to https://discord.com/channels/1038883381745827931/1175583555888361472 for official updates.\n"
-                "• Refer to https://discord.com/channels/1038883381745827931/1175583783962021998 for tournament guidelines and regulations."
+                "• Refer to https://discord.com/channels/1457365014506901568/1492565975847932104 for match schedules and pairings.\n"
+                "• Refer to https://discord.com/channels/1457365014506901568/1492564923031748688 for official updates.\n"
+                "• Refer to https://discord.com/channels/1457365014506901568/1492565754137149491 for tournament guidelines and regulations."
             ),
             inline=False
         )
@@ -4250,6 +4250,130 @@ async def find_tickets(interaction: discord.Interaction):
     
     await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
+async def auto_create_open_tickets(guild: discord.Guild, user: discord.Member):
+    # Automatic background ticket creation for open matches
+    if not (BRACKET_LINK and BRACKET_API_KEY and GOOGLE_SHEET_LINK):
+        return
+
+    matches, err = await fetch_challonge_open_matches(BRACKET_LINK, BRACKET_API_KEY)
+    if err or not matches:
+        return
+
+    captains_dict, is_1v1, err2 = await fetch_google_sheet_captains(GOOGLE_SHEET_LINK)
+    if err2:
+        return
+
+    cat_primary = discord.utils.get(guild.categories, id=1485196564698890330)
+    cat_backup = discord.utils.get(guild.categories, id=1485217715449892925)
+    if not cat_primary and not cat_backup:
+        return
+
+    helper_team_role = discord.utils.get(guild.roles, id=ROLE_IDS["helper_team"])
+
+    for match in matches:
+        team1, team2 = match['team1'], match['team2']
+        p1_id, p2_id = match['player1_id'], match['player2_id']
+        match_id, mod_round = match['id'], match['round']
+
+        c1_raw = captains_dict.get(team1, "") or captains_dict.get(team1.strip(), "")
+        c2_raw = captains_dict.get(team2, "") or captains_dict.get(team2.strip(), "")
+
+        def extract_uid(raw: str):
+            m = re.search(r'<@!?(\d+)>', raw)
+            if m: return int(m.group(1))
+            if raw.strip().isdigit(): return int(raw.strip())
+            return None
+
+        uid1, uid2 = extract_uid(c1_raw), extract_uid(c2_raw)
+        captain1 = await guild.fetch_member(uid1) if uid1 else None
+        captain2 = await guild.fetch_member(uid2) if uid2 else None
+
+        if is_1v1:
+            n1 = (captain1.name if captain1 else re.sub(r'[^a-zA-Z0-9]', '', team1))[:12].lower()
+            n2 = (captain2.name if captain2 else re.sub(r'[^a-zA-Z0-9]', '', team2))[:12].lower()
+            chan_name = f"r{mod_round}-{n1}-vs-{n2}"
+        else:
+            safe_t1 = re.sub(r'[^a-zA-Z0-9]', '', team1).lower()[:8]
+            safe_t2 = re.sub(r'[^a-zA-Z0-9]', '', team2).lower()[:8]
+            c1_sfx = captain1.name.lower()[:6] if captain1 else 'cap1'
+            c2_sfx = captain2.name.lower()[:6] if captain2 else 'cap2'
+            chan_name = f"r{mod_round}-{safe_t1}{c1_sfx}-vs-{safe_t2}{c2_sfx}"
+
+        chan_name = re.sub(r'[^a-zA-Z0-9\-]', '-', chan_name)
+        chan_name = re.sub(r'-+', '-', chan_name).strip('-')[:100]
+        topic = f"MatchID:{match_id} | P1:{p1_id} | P2:{p2_id} | Team1:{team1} | Team2:{team2}"
+
+        already_exists = False
+        for c in filter(None, [cat_primary, cat_backup]):
+            if discord.utils.get(c.channels, name=chan_name):
+                already_exists = True
+                break
+        if already_exists: continue
+
+        target_category = cat_primary if cat_primary and len(cat_primary.channels) < 49 else cat_backup
+        
+        try:
+            overwrites = dict(target_category.overwrites) if target_category and target_category.overwrites else {}
+            if guild.default_role not in overwrites:
+                overwrites[guild.default_role] = discord.PermissionOverwrite(view_channel=False)
+            else:
+                overwrites[guild.default_role].view_channel = False
+
+            overwrites[guild.me] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_channels=True, manage_permissions=True)
+            
+            for role_key in ["head_organizer", "head_helper", "helper_team"]:
+                if r_id := ROLE_IDS.get(role_key):
+                    if staff_r := discord.utils.get(guild.roles, id=r_id):
+                        overwrites[staff_r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+
+            if captain1: overwrites[captain1] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+            if captain2: overwrites[captain2] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+
+            new_ch = await guild.create_text_channel(
+                name=chan_name,
+                category=target_category,
+                topic=topic,
+                overwrites=overwrites
+            )
+
+            rules_embed = discord.Embed(
+                title="🏆 Tournament Match Setup",
+                description="Please use this channel for all tournament discussions.",
+                color=0x00ff00
+            )
+            rules_embed.add_field(
+                name="📋 Tournament Information",
+                value="• Refer to <#1175583664290144306> for match schedules and pairings.\n• Refer to <#1175583555888361472> for official updates.\n• Refer to <#1175583783962021998> for tournament guidelines and regulations.",
+                inline=False
+            )
+            
+            if is_1v1:
+                pval = f"**Round:** R{mod_round}\n**Captain 1:** {captain1.mention if captain1 else c1_raw or team1}\n**Captain 2:** {captain2.mention if captain2 else c2_raw or team2}"
+            else:
+                pval = f"**Round:** R{mod_round}\n**Team 1:** {team1} — Captain: {captain1.mention if captain1 else c1_raw or 'Not Found'}\n**Team 2:** {team2} — Captain: {captain2.mention if captain2 else c2_raw or 'Not Found'}"
+
+            rules_embed.add_field(name="👥 Match Participants", value=pval, inline=False)
+            rules_embed.add_field(
+                name="🆘 Need Help?",
+                value=f"If you require any assistance, please ping {helper_team_role.mention if helper_team_role else '@Helper Team'}.",
+                inline=False
+            )
+
+            ping_content = " ".join(filter(None, [
+                captain1.mention if captain1 else (c1_raw or None),
+                captain2.mention if captain2 else (c2_raw or None),
+            ])) or f"{team1} vs {team2}"
+
+            try:
+                with open("Vᴀʟᴏʀᴀɴᴛ Vᴀɴɢᴜᴀʀᴅ E-ꜱᴩᴏʀᴛꜱ logo.png", "rb") as lf:
+                    rules_embed.set_thumbnail(url="attachment://logo.png")
+                    await new_ch.send(content=ping_content, embed=rules_embed, file=discord.File(io.BytesIO(lf.read()), "logo.png"))
+            except Exception:
+                await new_ch.send(content=ping_content, embed=rules_embed)
+
+        except Exception as e:
+            print(f"[auto-ticket] Channel creation error {chan_name}: {e}")
+
 @tree.command(name='upload-bracket-result', description='Upload match result manually directly to Challonge bracket based on this ticket')
 @app_commands.describe(
     winner='The captain or team representative who won the match',
@@ -4303,7 +4427,9 @@ async def upload_bracket_result(interaction: discord.Interaction, winner: discor
                 BRACKET_LINK, BRACKET_API_KEY, m_id, winner_p_id, scores_csv
             )
             if success:
-                await interaction.edit_original_response(content=f"🎉 **Challonge Updated Successfully!** Match ID `{m_id}` advanced.")
+                import asyncio
+                await interaction.edit_original_response(content=f"🎉 **Challonge Updated Successfully!** Match ID `{m_id}` advanced.\n*(Auto-scanning for any newly unlocked matches...)*")
+                asyncio.create_task(auto_create_open_tickets(interaction.guild, interaction.user))
             else:
                 await interaction.edit_original_response(content=f"❌ **Challonge Update Failed:** {challonge_err}")
     else:
