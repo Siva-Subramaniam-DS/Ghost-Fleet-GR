@@ -54,8 +54,6 @@ DEFAULT_CHANNEL_IDS = {
     "rules": 1493371304860979434,           # RULES
     "bracket": 1493371371504275659,         # BRACKET
     "deadlines": 1493371443445108857,       # DEADLINE
-    "participants_list": 1493371304860979434,
-    "event_videos": 1493422902547185705,
     "category_1": 1493422365902897194,      # Category 1
     "category_2": 1493422524967686184,      # Category 2
     "closed_tickets_category": 1493423252658323598  # Closed Tickets
