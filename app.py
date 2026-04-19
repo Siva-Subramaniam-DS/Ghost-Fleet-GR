@@ -4342,7 +4342,7 @@ class RulesModal(discord.ui.Modal, title='Publish Tournament Rules'):
             await interaction.response.send_message(f"❌ I don't have permission to send messages in {channel.mention}.", ephemeral=True)
 
 
-@tree.command(name='rules', description='Write and publish new tournament rules to the guidelines channel')
+@tree.command(name='publish-rules', description='Write and publish new tournament rules to the guidelines channel')
 async def publish_rules(interaction: discord.Interaction):
     # Organizers or judges only
     if not (has_event_create_permission(interaction) or has_event_result_permission(interaction)):
