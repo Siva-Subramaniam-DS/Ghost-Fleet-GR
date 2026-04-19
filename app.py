@@ -1002,9 +1002,12 @@ class TakeScheduleButton(View):
                 timestamp=discord.utils.utcnow()
             )
             
+            t1_mention = getattr(self.team1_captain, 'mention', f"<@{self.team1_captain}>" if isinstance(self.team1_captain, int) else "<@Unknown>")
+            t2_mention = getattr(self.team2_captain, 'mention', f"<@{self.team2_captain}>" if isinstance(self.team2_captain, int) else "<@Unknown>")
+            
             embed.add_field(
                 name="📋 Match Details",
-                value=f"**Team 1:** {self.team1_captain.mention}\n**Team 2:** {self.team2_captain.mention}",
+                value=f"**Team 1:** {t1_mention}\n**Team 2:** {t2_mention}",
                 inline=False
             )
             
@@ -1018,7 +1021,7 @@ class TakeScheduleButton(View):
             
             # Send notification to the event channel
             await self.event_channel.send(
-                content=f"🔔 {judge.mention} {self.team1_captain.mention} {self.team2_captain.mention}",
+                content=f"🔔 {judge.mention} {t1_mention} {t2_mention}",
                 embed=embed
             )
             
@@ -3072,7 +3075,14 @@ async def unassign_command(interaction: discord.Interaction):
                             # Using the original view class
                             t1 = event_data.get('team1_captain')
                             t2 = event_data.get('team2_captain')
-                            new_view = TakeScheduleButton(selected_event_id, t1, t2, channel)
+                            t1_id = getattr(t1, 'id', t1) if t1 else None
+                            t2_id = getattr(t2, 'id', t2) if t2 else None
+                            
+                            # Convert IDs back to members if possible
+                            mem_1 = interaction.guild.get_member(int(t1_id)) if t1_id else None
+                            mem_2 = interaction.guild.get_member(int(t2_id)) if t2_id else None
+                            
+                            new_view = TakeScheduleButton(selected_event_id, mem_1 or t1, mem_2 or t2, channel)
 
                             await msg.edit(embed=embed, view=new_view)
                             
