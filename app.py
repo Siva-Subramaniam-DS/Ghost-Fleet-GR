@@ -683,10 +683,17 @@ def filter_commands_by_permission(permission_level: str) -> dict:
             "utility": COMMAND_DATA["utility"]
         }
 
-def build_help_embed(permission_level: str, user_name: str, bot_icon_url: str = None, user_icon_url: str = None) -> discord.Embed:
+def build_help_embed(permission_level: str, user_name: str, bot_icon_url: str = None, user_icon_url: str = None, category_key: str = None) -> discord.Embed:
     """Build a comprehensive help embed based on user's permission level — Ghost Fleet GR styled"""
     try:
         filtered_commands = filter_commands_by_permission(permission_level)
+
+        if not category_key and filtered_commands:
+            category_key = list(filtered_commands.keys())[0]
+            
+        category_data = filtered_commands.get(category_key)
+        if not category_data:
+            raise ValueError(f"Category {category_key} not found")
 
         # Permission-level badge with emoji
         badge_map = {
@@ -700,14 +707,15 @@ def build_help_embed(permission_level: str, user_name: str, bot_icon_url: str = 
         badge = badge_map.get(permission_level, "👤 Member")
 
         embed = discord.Embed(
-            title=f"📖 Ghost Fleet GR — Command Centre",
+            title=f"📖 {category_data['title']}",
             description=(
                 f"**{TOURNAMENT_SYSTEM_NAME}**\n"
                 f"───────────────────────────\n"
                 f"🔰 **Access Level:** {badge}\n"
                 f"📌 **Bracket:** [View Live Bracket]({LINK_BRACKET})\n"
                 f"📅 **Deadlines:** [View Schedule]({LINK_DEADLINE})\n"
-                f"📜 **Rules:** [Read Rules]({LINK_RULES})"
+                f"📜 **Rules:** [Read Rules]({LINK_RULES})\n\n"
+                f"**{category_data['description']}**"
             ),
             color=discord.Color(BRAND_COLOR),
             timestamp=discord.utils.utcnow()
@@ -716,33 +724,32 @@ def build_help_embed(permission_level: str, user_name: str, bot_icon_url: str = 
         if bot_icon_url:
             embed.set_thumbnail(url=bot_icon_url)
 
-        # Add command categories
-        for category_key, category_data in filtered_commands.items():
-            commands_text = ""
-            for cmd in category_data["commands"]:
-                commands_text += f"`{cmd['name']}`  — {cmd['description']}\n"
-                commands_text += f"   ┣ 🔒 *{cmd['permissions']}*\n"
-                if cmd.get('example'):
-                    commands_text += f"   ┗ 💡 *{cmd['example']}*\n"
-                else:
-                    commands_text += "\n"
-
-            # Chunk if over Discord field limit
-            if len(commands_text) > 1024:
-                parts, current_part = [], ""
-                for line in commands_text.split('\n'):
-                    if len(current_part + line + '\n') > 1024:
-                        parts.append(current_part.strip())
-                        current_part = line + '\n'
-                    else:
-                        current_part += line + '\n'
-                if current_part.strip():
-                    parts.append(current_part.strip())
-                for i, part in enumerate(parts):
-                    fname = category_data["title"] if i == 0 else f"{category_data['title']} (cont.)"
-                    embed.add_field(name=fname, value=part, inline=False)
+        commands_text = ""
+        for cmd in category_data["commands"]:
+            commands_text += f"`{cmd['name']}`  — {cmd['description']}\n"
+            commands_text += f"   ┣ 🔒 *{cmd['permissions']}*\n"
+            if cmd.get('example'):
+                commands_text += f"   ┗ 💡 *{cmd['example']}*\n"
             else:
-                embed.add_field(name=category_data["title"], value=commands_text, inline=False)
+                commands_text += "\n"
+
+        # Chunk if over Discord field limit
+        if len(commands_text) > 1024:
+            parts, current_part = [], ""
+            for line in commands_text.split('\n'):
+                if len(current_part + line + '\n') > 1024:
+                    parts.append(current_part.strip())
+                    current_part = line + '\n'
+                else:
+                    current_part += line + '\n'
+            if current_part.strip():
+                parts.append(current_part.strip())
+            for i, part in enumerate(parts):
+                fname = "Commands" if i == 0 else "Commands (cont.)"
+                embed.add_field(name=fname, value=part, inline=False)
+        else:
+            if commands_text.strip():
+                embed.add_field(name="Commands", value=commands_text, inline=False)
 
         footer_text = f"{ORGANIZATION_NAME} • Help • {user_name}"
         if user_icon_url:
@@ -761,6 +768,45 @@ def build_help_embed(permission_level: str, user_name: str, bot_icon_url: str = 
         )
         embed.set_footer(text=f"{ORGANIZATION_NAME}")
         return embed
+
+class HelpCategoryButton(discord.ui.Button):
+    def __init__(self, category_key: str, label: str, active: bool = False):
+        style = discord.ButtonStyle.primary if active else discord.ButtonStyle.secondary
+        super().__init__(style=style, label=label[:80], custom_id=f"help_cat_{category_key}")
+        self.category_key = category_key
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.view.update_category(interaction, self.category_key)
+
+class HelpView(discord.ui.View):
+    def __init__(self, permission_level: str, user_name: str, bot_icon_url: str = None, user_icon_url: str = None):
+        super().__init__(timeout=300)
+        self.permission_level = permission_level
+        self.user_name = user_name
+        self.bot_icon_url = bot_icon_url
+        self.user_icon_url = user_icon_url
+        self.filtered_commands = filter_commands_by_permission(permission_level)
+        self.current_category = list(self.filtered_commands.keys())[0] if self.filtered_commands else "system"
+        self._add_buttons()
+
+    def _add_buttons(self):
+        self.clear_items()
+        for cat_key, cat_data in self.filtered_commands.items():
+            active = (cat_key == self.current_category)
+            title = cat_data.get("title", "Category")
+            self.add_item(HelpCategoryButton(cat_key, label=title, active=active))
+
+    async def update_category(self, interaction: discord.Interaction, category_key: str):
+        self.current_category = category_key
+        self._add_buttons()
+        embed = build_help_embed(
+            self.permission_level, 
+            self.user_name, 
+            self.bot_icon_url, 
+            self.user_icon_url,
+            self.current_category
+        )
+        await interaction.response.edit_message(embed=embed, view=self)
 
 def has_organizer_permission(interaction):
     """Check if user has organizer permissions for rule management"""
@@ -2059,8 +2105,10 @@ async def help_command(interaction: discord.Interaction):
         bot_icon = interaction.client.user.display_avatar.url if interaction.client.user.display_avatar else None
         user_icon = interaction.user.display_avatar.url if interaction.user.display_avatar else None
         
-        embed = build_help_embed(permission_level, interaction.user.display_name, bot_icon_url=bot_icon, user_icon_url=user_icon)
-        await interaction.response.send_message(embed=embed, ephemeral=False)
+        view = HelpView(permission_level, interaction.user.display_name, bot_icon_url=bot_icon, user_icon_url=user_icon)
+        embed = build_help_embed(permission_level, interaction.user.display_name, bot_icon_url=bot_icon, user_icon_url=user_icon, category_key=view.current_category)
+        
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
         
     except Exception as e:
         print(f"Error in help command: {e}")
