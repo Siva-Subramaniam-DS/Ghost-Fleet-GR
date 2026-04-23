@@ -82,6 +82,9 @@ BRACKET_API_KEY = ""
 GOOGLE_SHEET_LINK = ""
 CURRENT_TOURNAMENT_NAME = ""
 
+# SheetDB API endpoint
+SHEETDB_API_URL = "https://sheetdb.io/api/v1/t9fxnnenmh675"
+
 # Key channel links for embeds
 LINK_BRACKET = "https://discord.com/channels/1084589736917737522/1493371371504275659"
 LINK_DEADLINE = "https://discord.com/channels/1084589736917737522/1493371443445108857"
@@ -226,6 +229,35 @@ judge_assignments = {}  # {judge_id: [event_ids]}
 
 import csv
 import io
+
+# ===========================================================================================
+# SHEETDB INTEGRATION
+# ===========================================================================================
+
+def _sync_sheetdb_post(sheet_name: str, row_data: dict):
+    """Synchronous POST to SheetDB. Call via asyncio.to_thread."""
+    try:
+        url = f"{SHEETDB_API_URL}?sheet={sheet_name}"
+        resp = requests.post(
+            url,
+            json={"data": [row_data]},
+            headers={"Content-Type": "application/json"},
+            timeout=10
+        )
+        if resp.status_code in (200, 201):
+            print(f"[SheetDB] ✅ Row added to '{sheet_name}'")
+            return True
+        else:
+            print(f"[SheetDB] ❌ Failed ({resp.status_code}): {resp.text[:200]}")
+            return False
+    except Exception as e:
+        print(f"[SheetDB] ❌ Exception posting to '{sheet_name}': {e}")
+        return False
+
+async def sheetdb_post(sheet_name: str, row_data: dict):
+    """Async wrapper — runs SheetDB POST in a thread so the event loop stays free."""
+    await asyncio.to_thread(_sync_sheetdb_post, sheet_name, row_data)
+
 
 def extract_challonge_id(link: str) -> str:
     match = re.search(r'https?://(?:([a-zA-Z0-9-]+)\.)?challonge\.com/([a-zA-Z0-9-_]+)', link)
@@ -908,15 +940,8 @@ def update_embed_title_with_checkmark(embed: discord.Embed) -> bool:
         print(f"Error updating embed title with checkmark: {e}")
         return False
 
-def can_judge_take_schedule(judge_id: int, max_assignments: int = 3) -> tuple[bool, str]:
-    """Check if a judge can take another schedule"""
-    if judge_id not in judge_assignments:
-        return True, ""
-    
-    current_assignments = len(judge_assignments[judge_id])
-    if current_assignments >= max_assignments:
-        return False, f"You already have {current_assignments} schedule(s) assigned. Maximum allowed is {max_assignments}."
-    
+def can_judge_take_schedule(judge_id: int, max_assignments: int = 999) -> tuple[bool, str]:
+    """Judge limit removed — judges can take unlimited schedules."""
     return True, ""
 
 def add_judge_assignment(judge_id: int, event_id: str):
@@ -961,11 +986,7 @@ class TakeScheduleButton(View):
             await interaction.response.send_message(f"❌ This schedule has already been taken by {self.judge.display_name}.", ephemeral=True)
             return
         
-        # Check if judge can take more schedules
-        can_take, error_message = can_judge_take_schedule(interaction.user.id, max_assignments=3)
-        if not can_take:
-            await interaction.response.send_message(f"❌ {error_message}", ephemeral=True)
-            return
+        # Judge limit removed — no cap on schedule assignments
         
         # Set flag to prevent race conditions
         self._taking_schedule = True
@@ -2445,6 +2466,27 @@ async def event_create(
     # Save events to file
     save_scheduled_events()
     print(f"💾 Event {event_id} saved to file")
+
+    # Log to SheetDB — Events sheet
+    asyncio.create_task(sheetdb_post("Events", {
+        "Timestamp":         datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        "Event_ID":          event_id,
+        "Tournament":        tournament,
+        "Round":             round_label,
+        "Group":             group_label or "",
+        "Date":              f"{date:02d}/{month:02d}",
+        "UTC_Time":          time_info['utc_time'],
+        "Team1_Captain_ID":  str(team_1_captain.id),
+        "Team1_Captain_Name": team_1_captain.name,
+        "Team2_Captain_ID":  str(team_2_captain.id),
+        "Team2_Captain_Name": team_2_captain.name,
+        "Judge_ID":          "",
+        "Judge_Name":        "",
+        "Channel_ID":        str(interaction.channel.id),
+        "Status":            "Scheduled",
+        "Created_By_ID":     str(interaction.user.id),
+        "Created_By_Name":   interaction.user.name
+    }))
     
     # Get random template image and create poster (exact same as Sample Bot)
     template_image = get_random_template()
@@ -2743,6 +2785,26 @@ async def event_result(
     
     embed.set_footer(text=f"Powered by • {ORGANIZATION_NAME}")
     
+    # Log to SheetDB — Results sheet
+    asyncio.create_task(sheetdb_post("Results", {
+        "Timestamp":      datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        "Tournament":     tournament,
+        "Round":          round,
+        "Group":          group_label or "",
+        "Winner_ID":      str(winner.id),
+        "Winner_Name":    winner.name,
+        "Winner_Score":   str(winner_score),
+        "Loser_ID":       str(loser.id),
+        "Loser_Name":     loser.name,
+        "Loser_Score":    str(loser_score),
+        "Judge_ID":       str(interaction.user.id),
+        "Judge_Name":     interaction.user.name,
+        "Recorder_ID":    str(recorder.id) if recorder else "",
+        "Recorder_Name":  recorder.name if recorder else "",
+        "Remarks":        remarks,
+        "Screenshots_Count": str(sum(1 for s in [ss_1,ss_2,ss_3,ss_4,ss_5,ss_6,ss_7,ss_8,ss_9,ss_10,ss_11] if s))
+    }))
+
     # Send confirmation to user
     await interaction.followup.send("✅ Event results posted to Results channel, current channel, and Staff Attendance logged!", ephemeral=True)
     
