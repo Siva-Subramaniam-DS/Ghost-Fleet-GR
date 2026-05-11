@@ -265,6 +265,29 @@ async def sheetdb_post(sheet_name: str, row_data: dict):
     await asyncio.to_thread(_sync_sheetdb_post, sheet_name, row_data)
 
 
+def _sync_sheetdb_clear(sheet_name: str) -> bool:
+    """Delete ALL rows from a SheetDB sheet (keeps header row)."""
+    try:
+        url = f"{SHEETDB_API_URL}/all?sheet={sheet_name}"
+        resp = requests.delete(url, headers={"Content-Type": "application/json"}, timeout=10)
+        if resp.status_code in (200, 201, 204):
+            print(f"[SheetDB] Cleared sheet '{sheet_name}'")
+            return True
+        print(f"[SheetDB] Clear failed ({resp.status_code}): {resp.text[:200]}")
+        return False
+    except Exception as e:
+        print(f"[SheetDB] Exception clearing '{sheet_name}': {e}")
+        return False
+
+async def sheetdb_clear_all():
+    """Clear all relevant SheetDB sheets for a fresh tournament."""
+    sheets = ["Events", "Results", "JudgeAssignments"]
+    results = []
+    for sheet in sheets:
+        ok = await asyncio.to_thread(_sync_sheetdb_clear, sheet)
+        results.append((sheet, ok))
+    return results
+
 def extract_challonge_id(link: str) -> str:
     match = re.search(r'https?://(?:([a-zA-Z0-9-]+)\.)?challonge\.com/([a-zA-Z0-9-_]+)', link)
     if match:
@@ -3482,6 +3505,15 @@ async def tournament_setup(
     save_staff_stats()
     save_rules()
 
+    # Clear all SheetDB sheets for fresh tournament
+    sheet_results = await sheetdb_clear_all()
+    cleared_ok = [s for s, ok in sheet_results if ok]
+    cleared_fail = [s for s, ok in sheet_results if not ok]
+    if cleared_ok:
+        db_msg += f"\n> Sheets Cleared: {', '.join(cleared_ok)}"
+    if cleared_fail:
+        db_msg += f"\n> Sheet Clear Failed: {', '.join(cleared_fail)}"
+
     embed = discord.Embed(
         title=f"🛑 TOURNAMENT HARD-RESET: {CURRENT_TOURNAMENT_NAME}",
         description=(
@@ -4750,7 +4782,94 @@ async def auto_create_open_tickets(guild: discord.Guild, user: discord.Member):
         except Exception as e:
             print(f"[auto-ticket] Channel creation error {chan_name}: {e}")
 
+
+async def _handle_next_round_check(
+    interaction: discord.Interaction,
+    completed_match_id: str,
+    winner_participant_id: str,
+    team1_name: str,
+    team2_name: str,
+    winner_discord_id: int,
+    winner_score: int,
+    loser_score: int
+):
+    """After a result is uploaded, check Challonge for the winner's next match.
+    - If opponent is known (both players assigned): auto-create ticket via auto_create_open_tickets.
+    - If opponent is TBD: send a waiting notification in the current channel.
+    """
+    if not (BRACKET_LINK and BRACKET_API_KEY):
+        return
+
+    await asyncio.sleep(3)  # give Challonge a moment to update
+
+    try:
+        matches, err = await fetch_challonge_open_matches(BRACKET_LINK, BRACKET_API_KEY)
+        if err or not matches:
+            return
+
+        # Find a match where the winner_participant_id is player1 or player2
+        next_match = None
+        for m in matches:
+            if str(m.get('player1_id')) == str(winner_participant_id) or \
+               str(m.get('player2_id')) == str(winner_participant_id):
+                next_match = m
+                break
+
+        channel = interaction.channel
+
+        if next_match is None:
+            # No next match yet — either tournament is done or waiting on other results
+            embed = discord.Embed(
+                title="Match Result Recorded",
+                description=(
+                    f"**Winner:** <@{winner_discord_id}> `{winner_score} - {loser_score}`\n\n"
+                    "No next round match is available yet. "
+                    "This may be because the bracket is waiting for another match to finish."
+                ),
+                color=discord.Color.orange(),
+                timestamp=discord.utils.utcnow()
+            )
+            embed.set_footer(text=f"{ORGANIZATION_NAME} • Bracket System")
+            await channel.send(embed=embed)
+            return
+
+        opp_team = next_match.get('team2') if str(next_match.get('player1_id')) == str(winner_participant_id) else next_match.get('team1')
+
+        if opp_team and opp_team != "TBD":
+            # Opponent known — auto_create_open_tickets already handles ticket creation
+            embed = discord.Embed(
+                title="Next Round Match Found!",
+                description=(
+                    f"**Round {next_match.get('round')}** has been unlocked.\n"
+                    f"A new ticket is being created for this match automatically."
+                ),
+                color=discord.Color.green(),
+                timestamp=discord.utils.utcnow()
+            )
+            embed.add_field(name="Match", value=f"{next_match.get('team1')} vs {next_match.get('team2')}", inline=False)
+            embed.set_footer(text=f"{ORGANIZATION_NAME} • Bracket System")
+            await channel.send(embed=embed)
+        else:
+            # Opponent is TBD — send waiting notification
+            embed = discord.Embed(
+                title="Waiting for Next Opponent",
+                description=(
+                    f"The winner advances to **Round {next_match.get('round')}**, "
+                    f"but the opponent is **TBD** (waiting on another match to finish).\n\n"
+                    f"A ticket will be auto-created once both teams are confirmed."
+                ),
+                color=discord.Color.blurple(),
+                timestamp=discord.utils.utcnow()
+            )
+            embed.set_footer(text=f"{ORGANIZATION_NAME} • Bracket System")
+            await channel.send(embed=embed)
+
+    except Exception as e:
+        print(f"[next-round-check] Error: {e}")
+
+
 @tree.command(name='upload-bracket-result', description='Upload match result manually directly to Challonge bracket based on this ticket')
+
 @app_commands.describe(
     winner='The captain or team representative who won the match',
     winner_score='Score of the winner',
@@ -4804,8 +4923,17 @@ async def upload_bracket_result(interaction: discord.Interaction, winner: discor
             )
             if success:
                 import asyncio
-                await interaction.edit_original_response(content=f"🎉 **Challonge Updated Successfully!** Match ID `{m_id}` advanced.\n*(Auto-scanning for any newly unlocked matches...)*")
+                await interaction.edit_original_response(
+                    content=f"Challonge Updated! Match ID `{m_id}` advanced.\n*(Scanning for next round matches...)*"
+                )
+                # Auto-scan for newly unlocked matches
                 asyncio.create_task(auto_create_open_tickets(interaction.guild, interaction.user))
+
+                # Check if winner already has a next-round opponent on Challonge
+                asyncio.create_task(_handle_next_round_check(
+                    interaction, m_id, winner_p_id, t1_name, t2_name,
+                    winner.id, winner_score, loser_score
+                ))
             else:
                 await interaction.edit_original_response(content=f"❌ **Challonge Update Failed:** {challonge_err}")
     else:
