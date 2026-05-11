@@ -45,7 +45,7 @@ except Exception as e:
 # Default Configs — Ghost Fleet GR
 DEFAULT_CHANNEL_IDS = {
     "take_schedule": 1493422902547185705,   # TAKE SCHEDULE
-    "results": 1495225995815289054,         # MATCH RESULT (reuse take_schedule until dedicated is set)
+    "results": 1493422902547185705,         # MATCH RESULT (reuse take_schedule until dedicated is set)
     "transcript": 1493422861405388950,      # TOUR SUPPORT TICKET (transcript)
     "staff_attendance": 1493423298724233287, # ATTENDANCE
     "announcement": 1493371443445108857,    # DEADLINES channel (closest to announcement)
@@ -81,6 +81,8 @@ BRACKET_LINK = "https://discord.com/channels/1084589736917737522/149337137150427
 BRACKET_API_KEY = ""
 GOOGLE_SHEET_LINK = ""
 CURRENT_TOURNAMENT_NAME = ""
+PLAYER_INFO_LINK = ""
+PLAYER_INFO_FORMAT = "5 vs 5"
 
 # SheetDB API endpoint
 SHEETDB_API_URL = "https://sheetdb.io/api/v1/t9fxnnenmh675"
@@ -94,7 +96,7 @@ LINK_RULES = "https://discord.com/channels/1084589736917737522/14933713048609794
 BRAND_COLOR = 0x1E3A5F
 
 def load_config():
-    global CHANNEL_IDS, ROLE_IDS, ORGANIZATION_NAME, TOURNAMENT_SYSTEM_NAME, BRACKET_LINK, BRACKET_API_KEY, GOOGLE_SHEET_LINK, CURRENT_TOURNAMENT_NAME
+    global CHANNEL_IDS, ROLE_IDS, ORGANIZATION_NAME, TOURNAMENT_SYSTEM_NAME, BRACKET_LINK, BRACKET_API_KEY, GOOGLE_SHEET_LINK, CURRENT_TOURNAMENT_NAME, PLAYER_INFO_LINK, PLAYER_INFO_FORMAT
     
     config = {}
     if USE_FIREBASE:
@@ -122,6 +124,8 @@ def load_config():
         BRACKET_API_KEY = config.get('bracket_api_key', BRACKET_API_KEY)
         GOOGLE_SHEET_LINK = config.get('google_sheet_link', GOOGLE_SHEET_LINK)
         CURRENT_TOURNAMENT_NAME = config.get('current_tournament_name', "")
+        PLAYER_INFO_LINK = config.get('player_info_link', PLAYER_INFO_LINK)
+        PLAYER_INFO_FORMAT = config.get('player_info_format', PLAYER_INFO_FORMAT)
 
 def save_config():
     config = {
@@ -132,7 +136,9 @@ def save_config():
         'bracket_link': BRACKET_LINK,
         'bracket_api_key': BRACKET_API_KEY,
         'google_sheet_link': GOOGLE_SHEET_LINK,
-        'current_tournament_name': CURRENT_TOURNAMENT_NAME
+        'current_tournament_name': CURRENT_TOURNAMENT_NAME,
+        'player_info_link': PLAYER_INFO_LINK,
+        'player_info_format': PLAYER_INFO_FORMAT
     }
     
     if USE_FIREBASE:
@@ -4804,6 +4810,225 @@ async def upload_bracket_result(interaction: discord.Interaction, winner: discor
                 await interaction.edit_original_response(content=f"❌ **Challonge Update Failed:** {challonge_err}")
     else:
         await interaction.edit_original_response(content="❌ Could not extract complete Match Data from the channel topic.")
+
+# ===========================================================================
+# PLAYER INFORMATION CONFIG & LOOKUP
+# ===========================================================================
+
+@tree.command(name="config_player_info", description="Set the Google Sheet link and format for player information (Organizer/Owner)")
+@app_commands.describe(
+    link="Google Sheet link for player info (must be publicly accessible)",
+    format="Match format — determines which columns are shown"
+)
+@app_commands.choices(
+    format=[
+        app_commands.Choice(name="1 vs 1", value="1 vs 1"),
+        app_commands.Choice(name="2 vs 2", value="2 vs 2"),
+        app_commands.Choice(name="3 vs 3", value="3 vs 3"),
+        app_commands.Choice(name="4 vs 4", value="4 vs 4"),
+        app_commands.Choice(name="5 vs 5", value="5 vs 5"),
+    ]
+)
+async def config_player_info(interaction: discord.Interaction, link: str, format: app_commands.Choice[str]):
+    is_owner = interaction.user.id == BOT_OWNER_ID
+    head_organizer_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_organizer"])
+    if not (is_owner or head_organizer_role):
+        await interaction.response.send_message(
+            "❌ Only **Bot Owner** or **Head Organizer** can configure player info.", ephemeral=True
+        )
+        return
+
+    global PLAYER_INFO_LINK, PLAYER_INFO_FORMAT
+    PLAYER_INFO_LINK = link
+    PLAYER_INFO_FORMAT = format.value
+    save_config()
+
+    is_1v1 = (format.value == "1 vs 1")
+    if is_1v1:
+        col_preview = "\u2022 Player Discord ID\n\u2022 Player Game Name\n\u2022 Player Game ID\n\u2022 Player Title"
+    else:
+        size = int(format.value.split()[0])
+        col_preview = "\u2022 Team Name\n\u2022 Captain Discord ID | Captain Game Name | Captain Game ID | Captain Title"
+        for n in range(2, size + 1):
+            col_preview += f"\n\u2022 Player {n} Discord ID | Player {n} Game Name | Player {n} Game ID | Player {n} Title"
+
+    embed = discord.Embed(
+        title="Player Info Config Updated",
+        color=discord.Color.green(),
+        timestamp=discord.utils.utcnow()
+    )
+    embed.add_field(name="Format", value=f"**{format.value}**", inline=True)
+    embed.add_field(name="Sheet Link", value=f"[Open Sheet]({link})", inline=True)
+    embed.add_field(name="Expected Sheet Columns", value=col_preview, inline=False)
+    embed.set_footer(text=f"{ORGANIZATION_NAME} • Configured by {interaction.user.display_name}")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+_1V1_FIELDS = ["Player Discord ID", "Player Game Name", "Player Game ID", "Player Title"]
+_TEAM_CAPTAIN_FIELDS = ["Team Name", "Captain Discord ID", "Captain Game Name", "Captain Game ID", "Captain Title"]
+_TEAM_PLAYER_FIELDS_TEMPLATE = ["Player {n} Discord ID", "Player {n} Game Name", "Player {n} Game ID", "Player {n} Title"]
+
+def _build_team_fields(format_str: str) -> list:
+    try:
+        size = int(format_str.split()[0])
+    except Exception:
+        size = 5
+    fields = list(_TEAM_CAPTAIN_FIELDS)
+    for n in range(2, size + 1):
+        for tmpl in _TEAM_PLAYER_FIELDS_TEMPLATE:
+            fields.append(tmpl.format(n=n))
+    return fields
+
+def _col_index(header: list, name: str) -> int:
+    name_lower = name.lower().strip()
+    for i, h in enumerate(header):
+        if h.lower().strip() == name_lower:
+            return i
+    return -1
+
+
+@tree.command(name="player_information", description="Look up player or team info from the configured Google Sheet")
+@app_commands.describe(user="The player or team captain to look up")
+async def player_information(interaction: discord.Interaction, user: discord.Member):
+    await interaction.response.defer()
+
+    if not PLAYER_INFO_LINK:
+        await interaction.followup.send(
+            "Player info sheet is not configured. Ask an organizer to run `/config_player_info`.",
+            ephemeral=True
+        )
+        return
+
+    sheet_match = re.search(r'/d/([a-zA-Z0-9-_]+)', PLAYER_INFO_LINK)
+    if not sheet_match:
+        await interaction.followup.send("Invalid Google Sheet link in config.", ephemeral=True)
+        return
+
+    sheet_id = sheet_match.group(1)
+    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+
+    try:
+        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        resp.raise_for_status()
+        rows = list(csv.reader(io.StringIO(resp.text)))
+
+        if not rows:
+            await interaction.followup.send("The player info sheet is empty.", ephemeral=True)
+            return
+
+        header = rows[0]
+        user_id_str = str(user.id)
+        user_mention = f"<@{user.id}>"
+
+        found_row = None
+        for row in rows[1:]:
+            for cell in row:
+                if user_id_str in cell.strip() or user_mention in cell.strip():
+                    found_row = row
+                    break
+            if found_row:
+                break
+
+        if found_row is None:
+            await interaction.followup.send(
+                f"{user.mention} was not found in the player information sheet.\nMake sure their Discord ID is recorded.",
+                ephemeral=True
+            )
+            return
+
+        is_1v1 = (PLAYER_INFO_FORMAT == "1 vs 1")
+
+        if is_1v1:
+            embed = discord.Embed(
+                title="Player Information",
+                description=f"{user.mention}\n**Format:** {PLAYER_INFO_FORMAT}",
+                color=discord.Color(BRAND_COLOR),
+                timestamp=discord.utils.utcnow()
+            )
+            embed.set_thumbnail(url=user.display_avatar.url)
+            found_any = False
+            for field_name in _1V1_FIELDS:
+                col = _col_index(header, field_name)
+                if col == -1:
+                    continue
+                val = found_row[col].strip() if col < len(found_row) else ""
+                if not val:
+                    val = "\u2014"
+                if "discord id" in field_name.lower() and val.isdigit():
+                    val = f"<@{val}>"
+                embed.add_field(name=field_name.replace("Player ", ""), value=val, inline=True)
+                found_any = True
+            if not found_any:
+                embed.add_field(name="Column Mismatch", value=f"Expected: {', '.join(_1V1_FIELDS)}", inline=False)
+        else:
+            try:
+                team_size = int(PLAYER_INFO_FORMAT.split()[0])
+            except Exception:
+                team_size = 5
+
+            embed = discord.Embed(
+                title="Team Information",
+                description=f"Captain: {user.mention}\n**Format:** {PLAYER_INFO_FORMAT}",
+                color=discord.Color(BRAND_COLOR),
+                timestamp=discord.utils.utcnow()
+            )
+            embed.set_thumbnail(url=user.display_avatar.url)
+            found_any = False
+
+            tn_col = _col_index(header, "Team Name")
+            if tn_col != -1:
+                tn_val = found_row[tn_col].strip() if tn_col < len(found_row) else "\u2014"
+                embed.add_field(name="Team Name", value=tn_val or "\u2014", inline=False)
+                found_any = True
+
+            cap_block = []
+            for fname in ["Captain Discord ID", "Captain Game Name", "Captain Game ID", "Captain Title"]:
+                col = _col_index(header, fname)
+                if col == -1:
+                    continue
+                val = found_row[col].strip() if col < len(found_row) else "\u2014"
+                if not val:
+                    val = "\u2014"
+                if "discord id" in fname.lower() and val.isdigit():
+                    val = f"<@{val}>"
+                cap_block.append(f"**{fname.replace('Captain ', '')}:** {val}")
+                found_any = True
+            if cap_block:
+                embed.add_field(name="Captain", value="\n".join(cap_block), inline=False)
+
+            embed.add_field(name="\u200b", value="\u200b", inline=False)
+
+            for n in range(2, team_size + 1):
+                player_block = []
+                for tmpl in _TEAM_PLAYER_FIELDS_TEMPLATE:
+                    fname = tmpl.format(n=n)
+                    col = _col_index(header, fname)
+                    if col == -1:
+                        continue
+                    val = found_row[col].strip() if col < len(found_row) else "\u2014"
+                    if not val:
+                        val = "\u2014"
+                    if "discord id" in fname.lower() and val.isdigit():
+                        val = f"<@{val}>"
+                    player_block.append(f"**{fname.replace(f'Player {n} ', '')}:** {val}")
+                    found_any = True
+                if player_block:
+                    embed.add_field(name=f"Player {n}", value="\n".join(player_block), inline=True)
+
+            if not found_any:
+                embed.add_field(
+                    name="Column Mismatch",
+                    value="Expected: Team Name, Captain Discord ID, Captain Game Name, Captain Game ID, Captain Title, Player 2 Discord ID...",
+                    inline=False
+                )
+
+        embed.set_footer(text=f"{ORGANIZATION_NAME} • Player Info • Requested by {interaction.user.display_name}")
+        await interaction.followup.send(embed=embed)
+
+    except Exception as e:
+        await interaction.followup.send(f"Error fetching player info: {str(e)}", ephemeral=True)
+        print(f"[player_information] Error: {e}")
+
 
 if __name__ == "__main__":
     # Get Discord token from environment
