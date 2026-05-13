@@ -27,7 +27,7 @@ ROLE_IDS = {
 
 CHANNEL_IDS = {
     "schedule":     config.get("channels", {}).get("schedule", 1492565951886135577),
-    "results":      config.get("channels", {}).get("results", 1492565931522785511),
+    "results":      config.get("channels", {}).get("results", 1495225995815289054),
     "transcripts":  config.get("channels", {}).get("transcripts", 1492565906046455949),
     "attendance":   config.get("channels", {}).get("attendance", 1175583811812204565),  # unchanged
     "announcement":  config.get("channels", {}).get("announcement", 1492564923031748688),

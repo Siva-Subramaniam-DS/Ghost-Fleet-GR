@@ -45,7 +45,7 @@ except Exception as e:
 # Default Configs — Ghost Fleet GR
 DEFAULT_CHANNEL_IDS = {
     "take_schedule": 1493422902547185705,   # TAKE SCHEDULE
-    "results": 1493422902547185705,         # MATCH RESULT (reuse take_schedule until dedicated is set)
+    "results": 1495225995815289054,         # MATCH RESULT
     "transcript": 1493422861405388950,      # TOUR SUPPORT TICKET (transcript)
     "staff_attendance": 1493423298724233287, # ATTENDANCE
     "announcement": 1493371443445108857,    # DEADLINES channel (closest to announcement)
@@ -2841,7 +2841,10 @@ async def event_result(
     results_posted = False
     try:
         results_channel = interaction.guild.get_channel(CHANNEL_IDS["results"])
-        if results_channel:
+        schedule_channel_id = CHANNEL_IDS.get("take_schedule")
+        
+        # Only post in results channel if it's different from the schedule channel
+        if results_channel and results_channel.id != schedule_channel_id:
             if files_to_send:
                 # Create copies of files for results channel (files can only be used once)
                 results_files = []
