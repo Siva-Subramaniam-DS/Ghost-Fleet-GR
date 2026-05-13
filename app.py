@@ -5009,9 +5009,55 @@ def _build_team_fields(format_str: str) -> list:
 
 def _col_index(header: list, name: str) -> int:
     name_lower = name.lower().strip()
+    
+    # Try exact match first
     for i, h in enumerate(header):
         if h.lower().strip() == name_lower:
             return i
+
+    # Helper to normalize headers (remove special dashes and extra spaces)
+    def normalize(text):
+        return text.lower().strip().replace("‑", "-")
+        
+    name_norm = normalize(name_lower)
+    
+    # Aliases mapping
+    aliases = {
+        "discord id": ["discord id", "discord username", "discord tag", "discord developer id", "discord devloper id"],
+        "game name": ["game name", "in game name", "in-game name"],
+        "game id": ["game id", "in game id", "in game in"],
+        "title": ["title", "in-game title", "in game title"]
+    }
+    
+    for i, h in enumerate(header):
+        h_norm = normalize(h)
+        
+        # Determine prefix and base attribute for the requested column name
+        prefix = ""
+        base_attr = name_norm
+        
+        if name_norm.startswith("captain "):
+            prefix = "captain "
+            base_attr = name_norm[len("captain "):]
+        elif name_norm.startswith("player "):
+            parts = name_norm.split(" ")
+            if len(parts) >= 3 and parts[1].isdigit():
+                prefix = f"player {parts[1]} "
+                base_attr = " ".join(parts[2:])
+            else:
+                prefix = "player "
+                base_attr = " ".join(parts[1:])
+        
+        if base_attr in aliases:
+            for alias in aliases[base_attr]:
+                # Check with prefix (e.g., "Player Discord Username")
+                if h_norm == f"{prefix}{alias}":
+                    return i
+                # Check without prefix if it's a 1v1 format (prefix is "player ") 
+                # (e.g., just "Discord Username" or "In game name")
+                if prefix == "player " and h_norm == alias:
+                    return i
+
     return -1
 
 
